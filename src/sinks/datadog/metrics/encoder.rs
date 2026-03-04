@@ -1606,9 +1606,11 @@ mod tests {
         let mut encoded_metrics = 0;
 
         while !pending.is_empty() {
-            let mut encoder =
-                DatadogMetricsEncoder::new(DatadogMetricsEndpoint::Series(SeriesApiVersion::V2), None)
-                    .expect("default payload size limits should be valid");
+            let mut encoder = DatadogMetricsEncoder::new(
+                DatadogMetricsEndpoint::Series(SeriesApiVersion::V2),
+                None,
+            )
+            .expect("default payload size limits should be valid");
 
             let mut next_pending = Vec::new();
             let mut hit_limit = false;
@@ -1645,7 +1647,10 @@ mod tests {
         }
 
         assert_eq!(encoded_metrics, 120_000);
-        assert!(encoded_batches > 1, "expected multiple batches for V2 default limits");
+        assert!(
+            encoded_batches > 1,
+            "expected multiple batches for V2 default limits"
+        );
     }
 
     #[test]

@@ -8,11 +8,13 @@ use vector_lib::{
 };
 
 use super::{
-    config::{DatadogMetricsEndpoint, DatadogMetricsEndpointConfiguration},
+    config::{DatadogMetricsEndpoint, DatadogMetricsEndpointConfiguration, SeriesApiVersion},
     encoder::{CreateError, DatadogMetricsEncoder, EncoderError, FinishError},
     service::DatadogMetricsRequest,
 };
-use crate::sinks::util::{IncrementalRequestBuilder, metadata::RequestMetadataBuilder};
+use crate::sinks::util::{
+    IncrementalRequestBuilder, metadata::RequestMetadataBuilder, request_builder::EncodeResult,
+};
 
 #[derive(Debug, Snafu)]
 pub enum RequestBuilderError {
@@ -77,6 +79,14 @@ pub struct DatadogMetricsRequestBuilder {
 }
 
 impl DatadogMetricsRequestBuilder {
+    fn endpoint_name(endpoint: DatadogMetricsEndpoint) -> &'static str {
+        match endpoint {
+            DatadogMetricsEndpoint::Series(SeriesApiVersion::V1) => "series_v1",
+            DatadogMetricsEndpoint::Series(SeriesApiVersion::V2) => "series_v2",
+            DatadogMetricsEndpoint::Sketches => "sketches",
+        }
+    }
+
     pub fn new(
         endpoint_configuration: DatadogMetricsEndpointConfiguration,
         default_namespace: Option<String>,
@@ -102,6 +112,18 @@ impl DatadogMetricsRequestBuilder {
             DatadogMetricsEndpoint::Series { .. } => &mut self.series_encoder,
             DatadogMetricsEndpoint::Sketches => &mut self.sketches_encoder,
         }
+    }
+
+    fn log_payload_sizes(endpoint: DatadogMetricsEndpoint, encode_result: &EncodeResult<Bytes>) {
+        debug!(
+            message = "Prepared Datadog metrics payload.",
+            endpoint = Self::endpoint_name(endpoint),
+            uncompressed_bytes = encode_result.uncompressed_byte_size,
+            compressed_bytes = encode_result
+                .compressed_byte_size
+                .unwrap_or(encode_result.uncompressed_byte_size),
+            internal_log_rate_limit = false,
+        );
     }
 }
 
@@ -147,6 +169,13 @@ impl IncrementalRequestBuilder<((Option<Arc<str>>, DatadogMetricsEndpoint), Vec<
                     // We encoded the metric successfully, so update our metadata and continue.
                     Ok(None) => n += 1,
                     Ok(Some(metric)) => {
+                        debug!(
+                            message = "Datadog metrics payload limit reached, flushing current payload.",
+                            endpoint = Self::endpoint_name(endpoint),
+                            encoded_metrics_in_payload = n,
+                            remaining_metrics = metric_drain.len() + 1,
+                            internal_log_rate_limit = false,
+                        );
                         // The encoded metric would not fit within the configured limits, so we need
                         // to finish the current encoder and generate our payload, and keep going.
                         pending = Some(metric);
@@ -169,6 +198,8 @@ impl IncrementalRequestBuilder<((Option<Arc<str>>, DatadogMetricsEndpoint), Vec<
                             endpoint,
                             finalizers,
                         };
+
+                        Self::log_payload_sizes(endpoint, &encode_result);
 
                         let request_metadata =
                             RequestMetadataBuilder::from_events(&metrics).build(&encode_result);
@@ -201,6 +232,13 @@ impl IncrementalRequestBuilder<((Option<Arc<str>>, DatadogMetricsEndpoint), Vec<
                             mut metrics,
                             mut recommended_splits,
                         } => {
+                            debug!(
+                                message = "Datadog metrics payload exceeded limits after finalize, splitting batch.",
+                                endpoint = Self::endpoint_name(endpoint),
+                                metrics_to_split = metrics.len(),
+                                recommended_splits,
+                                internal_log_rate_limit = false,
+                            );
                             let mut split_idx = metrics.len();
                             let stride = split_idx / recommended_splits;
 
@@ -286,6 +324,8 @@ fn encode_now_or_never(
                 endpoint,
                 finalizers,
             };
+
+            DatadogMetricsRequestBuilder::log_payload_sizes(endpoint, &encode_result);
 
             let request_metadata =
                 RequestMetadataBuilder::from_events(&processed).build(&encode_result);

@@ -22,6 +22,7 @@ use crate::{
     http::{BuildRequestSnafu, HttpClient},
     sinks::{datadog::DatadogApiError, util::retries::RetryLogic},
 };
+use super::request_compression;
 
 /// Retry logic specific to the Datadog metrics endpoints.
 #[derive(Debug, Default, Clone)]
@@ -63,12 +64,8 @@ impl DatadogMetricsRequest {
                 HeaderValue::from_str(&key).expect("API key should be only valid ASCII characters")
             },
         );
-        // Requests to the metrics endpoints can be compressed, and there's almost no reason to
-        // _not_ compress them given tha t metric data, when encoded, is very repetitive.  Thus,
-        // here and through the sink code, we always compress requests.  Datadog also only supports
-        // zlib (DEFLATE) compression, which is why it's hard-coded here vs being set via the common
-        // `Compression` value that most sinks utilize.
-        let request = Request::post(self.uri)
+        let compression = request_compression();
+        let mut request = Request::post(self.uri)
             .header("DD-API-KEY", api_key)
             // TODO: The Datadog Agent sends this header to indicate the version of the Go library
             // it uses which contains the Protocol Buffers definitions used for the Sketches API.
@@ -81,8 +78,9 @@ impl DatadogMetricsRequest {
             // able to programmatically set the version of the repo so we don't need to hardcode
             // this header.
             .header("DD-Agent-Payload", "4.87.0")
-            .header(CONTENT_TYPE, self.content_type)
-            .header(CONTENT_ENCODING, "deflate");
+            .header(CONTENT_TYPE, self.content_type);
+
+        request = request.header(CONTENT_ENCODING, compression.content_encoding());
 
         request.body(Body::from(self.payload))
     }

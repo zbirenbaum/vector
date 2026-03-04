@@ -16,13 +16,17 @@ use vector_lib::{
     request_metadata::GroupedCountByteSize,
 };
 
-use super::config::{DatadogMetricsEndpoint, SeriesApiVersion};
+use super::{
+    DatadogMetricsCompression,
+    config::{DatadogMetricsEndpoint, SeriesApiVersion},
+    request_compression,
+};
 use crate::{
     common::datadog::{
         DatadogMetricType, DatadogPoint, DatadogSeriesMetric, DatadogSeriesMetricMetadata,
     },
     proto::fds::protobuf_descriptors,
-    sinks::util::{Compression, Compressor, encode_namespace, request_builder::EncodeResult},
+    sinks::util::{Compressor, encode_namespace, request_builder::EncodeResult},
 };
 
 const SERIES_PAYLOAD_HEADER: &[u8] = b"{\"series\":[";
@@ -352,7 +356,10 @@ impl DatadogMetricsEncoder {
         // assume the worst case while our limits assume the worst case _overhead_.  Maybe our
         // numbers are technically off in the end, but `finish` catches that for us, too.
         let compressed_len = self.state.writer.get_ref().len();
-        let max_compressed_metric_len = n + max_compressed_overhead_len(n);
+        let max_compressed_metric_len = match request_compression() {
+            DatadogMetricsCompression::Deflate => n + max_compressed_overhead_len(n),
+            DatadogMetricsCompression::Zstd => zstd::zstd_safe::compress_bound(n),
+        };
         if compressed_len + max_compressed_metric_len > self.compressed_limit {
             return Ok(false);
         }
@@ -875,10 +882,7 @@ fn generate_series_metrics(
 }
 
 fn get_compressor() -> Compressor {
-    // We use the "zlib default" compressor because it's all Datadog supports, and adding it
-    // generically to `Compression` would make things a little weird because of the conversion trait
-    // implementations that are also only none vs gzip.
-    Compression::zlib_default().into()
+    request_compression().as_compression().into()
 }
 
 const fn max_uncompressed_header_len() -> usize {
